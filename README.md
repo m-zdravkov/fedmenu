@@ -7,8 +7,6 @@ To install, put the script in a $PATH directory and assign a keyboard shortcut t
 
 Dependencies:
 - dmenu
-(Common GNU tools)
 - realpath
 - dirname
 - compgen
-
