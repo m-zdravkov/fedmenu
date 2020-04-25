@@ -26,6 +26,10 @@ item_vplayer=" Watch in "$vplayer
 item_mplayer=" Play in "$mplayer
 item_audacity=" Open in audacity"
 item_office=" Open in "$office
+item_copypaste=" Copy-paste"
+item_selectfile=" Select file"
+item_selectdirectory=" Select directory"
+item_pastehere=" Paste in here"
 
 # Set CWD to a normalized path if the argument starts with '.' to avoid errors
 [[ $1 == .* ]] && CWD=`realpath "$1"` || CWD=$1
@@ -36,48 +40,102 @@ then
 	CWD=$(pwd)
 fi
 
+# Modes: normal (explorer), select
+mode_normal=explorer
+mode_select=select
+mode_paste=paste
+
+if [ -z $2 ];
+then
+	mode=$mode_normal
+else
+	mode=$2
+fi
+
 declare -a items
-if [ -d "$CWD" ]
+if [ -d "$CWD" ];
 then
 	# If item is a directory
 	is_directory=true
-	items+=("$(ls "$CWD" -a)")
-	items+=("$item_open_explorer")
-	items+=("$item_open_xfce4_terminal")
-	items+=("$item_open")
+
+	case "$mode" in
+		$mode_normal)
+			# Normal options (directory)
+
+			items+=("$(ls "$CWD" -a)") # All files and directories
+			items+=("$item_open_explorer")
+			items+=("$item_open_xfce4_terminal")
+			items+=("$item_open")
+			items+=("$item_copypaste")
+			;;
+		$mode_select)
+			items+=("$(ls "$CWD" -a)") # All files and directories
+			items+=("$item_selectdirectory");;
+		$mode_paste)
+			items+=".."
+			items+=("$(find "$CWD/" -maxdepth 1 -mindepth 1 -type d,l -printf "%f\n" | sort)") # Directories only
+			items+=("$item_pastehere");;
+	esac
 else
 	# If item is a file
+
+	if [ "$mode" == "$mode_paste" ];
+	then
+		exec dmenu -p "fedmenu internal error: can not paste into file" -sb "#AA0000"
+		exit 1 # ERROR
+	fi
+
 	is_file=true
 	items+=("$item_open")
 	items+=("$item_open_vim")
 	[ -x "$CWD" ] && items+=("$item_exec")
 	
-	case "${CWD##*.}" in
-		"pdf")
-			items+=("$item_reader")
+	case $mode in
+		$mode_normal)
+			# Normal options (file)
+			case "${CWD##*.}" in
+				"pdf")
+					items+=("$item_reader")
+					;;
+				"jpg" | "jpeg" | "gif" | "png")
+					items+=("$item_viewer")
+					;;
+				"mp3" | "ogg" | "wav" | "m4a" | "opus")
+					items+=("$item_mplayer")
+					;;
+				"mp4" | "mkv" | "avi")
+					items+=("$item_vplayer")
+					;;
+				"aup")
+					items+=("$item_audacity")
+					;;
+				"odt" | "ods" | "doc" | "docx" | "xls" | "xlsx")
+					items+=("$item_office")
+					;;
+			esac
+	
 			;;
-		"jpg" | "jpeg" | "gif" | "png")
-			items+=("$item_viewer")
-			;;
-		"mp3" | "ogg" | "wav" | "m4a" | "opus")
-			items+=("$item_mplayer")
-			;;
-		"mp4" | "mkv" | "avi")
-			items+=("$item_vplayer")
-			;;
-		"aup")
-			items+=("$item_audacity")
-			;;
-		"odt" | "ods" | "doc" | "docx" | "xls" | "xlsx")
-			items+=("$item_office")
+		$mode_select)
+			items+=("$item_selectfile")
 			;;
 	esac
 
+	# Global options (all modes, file)
+	items+=("$item_copypaste")
 	items+=("$item_back")
 fi
 
 prompt=""
 [ -f "$CWD" ] && prompt=""
+
+case $mode in
+	$mode_select)
+		prompt="Select ${prompt}"
+		;;
+	$mode_paste)
+		prompt="Paste ${prompt}"
+		;;
+esac
 
 item=$(printf "%s\n" "${items[@]}" | eval "$dmenu_launch -p \"$prompt $CWD\"")
 
@@ -88,7 +146,7 @@ item=$(printf "%s\n" "${items[@]}" | eval "$dmenu_launch -p \"$prompt $CWD\"")
 case $item in
 
 	$item_back | '..')
-		exec fedmenu $(dirname "$CWD")
+		exec fedmenu $(dirname "$CWD") $mode
 		;;
 	$item_open)
 		exec $(compgen -c | eval "$dmenu_launch -p \"Open '$CWD' with\"") "$CWD"
@@ -123,14 +181,44 @@ case $item in
 	$item_office)
 		exec $office "$CWD"
 		;;
+	$item_copypaste)
+		file_name=${CWD##*/}
+		location=$(fedmenu "$(pwd)" $mode_paste)
+
+		if [ -z $location ]; # Exit on cancel
+		then
+			exit
+		fi
+
+		if [ -f "${location}/${file_name}" ];
+		then
+			answer=$(echo -e "No\nYes" | eval "$dmenu_launch -p \"Replace ${location}/${file_name}?\"")
+			if [ $answer == "Yes" ];
+			then
+				exec cp -uR $CWD $location
+				exit 0
+			fi
+			exit 1
+		else
+			exec cp -R $CWD $location
+		fi
+		;;
+	$item_pastehere)
+		echo "$CWD"
+		exit 0
+		;;
+	$item_selectdirectory | $item_selectfile)
+		echo "$CWD"
+		exit 0
+		;;
 	'.')
 		# Ignore move to current directory
-		exec fedmenu "$CWD"
+		exec fedmenu "$CWD" "$mode"
 		;;
 	*)
 		# Append item name to the path and continue
 		item="$CWD/$item"
-		exec fedmenu "$item"
+		exec fedmenu "$item" "$mode"
 		;;
 esac
 
