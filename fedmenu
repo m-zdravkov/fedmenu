@@ -14,6 +14,10 @@ dmenu_sb="#396535"
 dmenu_fn="DejaVu Sans Mono-8"
 dmenu_launch="dmenu -sb \"$dmenu_sb\" -fn \"$dmenu_fn\" -i -l 9"
 
+prompt() {
+	dmenu -sb "$dmenu_sb" -fn "$dmenu_fn" -i -l 9 -p "$1"
+}
+
 item_open="⮡ Open with ..."
 item_back=" Back to directory"
 item_open_explorer=" Open in file explorer"
@@ -26,19 +30,25 @@ item_vplayer=" Watch in "$vplayer
 item_mplayer=" Play in "$mplayer
 item_audacity=" Open in audacity"
 item_office=" Open in "$office
-item_copypaste=" Copy-paste"
+item_copypaste=" Copy-paste (cp)"
+item_copycontents=" Copy contents to clipboard"
+item_move=" Move (mv)"
 item_selectfile=" Select file"
 item_selectdirectory=" Select directory"
 item_pastehere=" Paste in here"
+item_mkdir=" New directory (mkdir)"
+item_rm=" Remove (rm)"
+item_rmdir=" Remove empty directory (rmdir)"
+# rm -rf is avoided on purpose! Use "Open with..." and type out the command if you really must. It's not something you want to do too quickly...
+item_touch=" New empty file (touch)"
+item_cancel="× Cancel"
+item_cancelstay="⮡ Cancel and stay in current location"
 
 # Set CWD to a normalized path if the argument starts with '.' to avoid errors
 [[ $1 == .* ]] && CWD=`realpath "$1"` || CWD=$1
 
 # Start from pwd if no file/directory is supplied
-if [ -z $1 ];
-then
-	CWD=$(pwd)
-fi
+[[ -z $1 ]] && CWD=$(pwd)
 
 # Modes: normal (explorer), select
 mode_normal=explorer
@@ -67,15 +77,28 @@ then
 			items+=("$item_open_xfce4_terminal")
 			items+=("$item_open")
 			items+=("$item_copypaste")
+			items+=("$item_move")
+			items+=("$item_touch")
 			;;
 		$mode_select)
 			items+=("$(ls "$CWD" -a)") # All files and directories
-			items+=("$item_selectdirectory");;
+			items+=("$item_selectdirectory")
+			items+=("$item_cancel")
+			items+=("$item_cancelstay")
+			;;
 		$mode_paste)
 			items+=".."
 			items+=("$(find "$CWD/" -maxdepth 1 -mindepth 1 -type d,l -printf "%f\n" | sort)") # Directories only
-			items+=("$item_pastehere");;
+			#unset "items[0]" # Remove first item (empty line from find function)
+			items+=("$item_pastehere")
+			items+=("$item_cancel")
+			items+=("$item_cancelstay")
+			;;
 	esac
+	
+	# Global options (all modes, directory)
+	items+=("$item_mkdir")
+	[ ! "$(ls -A $CWD)" ] && items+=("$item_rmdir")
 else
 	# If item is a file
 
@@ -113,15 +136,23 @@ else
 					items+=("$item_office")
 					;;
 			esac
-	
+			items+=("$item_rm")
+			items+=("$item_copypaste")
+			items+=("$item_copycontents")
+			items+=("$item_move")
 			;;
 		$mode_select)
 			items+=("$item_selectfile")
+			items+=("$item_cancel")
+			items+=("$item_cancelstay")
+			;;
+		$mode_paste)
+			items+=("$item_cancel")
+			items+=("$item_cancelstay")
 			;;
 	esac
 
 	# Global options (all modes, file)
-	items+=("$item_copypaste")
 	items+=("$item_back")
 fi
 
@@ -142,11 +173,32 @@ item=$(printf "%s\n" "${items[@]}" | eval "$dmenu_launch -p \"$prompt $CWD\"")
 # Exit on Esc
 [ -z "$item" ] && exit
 
+# Relocate (handle copy or move)
+relocate() {
+	case $1 in
+		"copy") cp -R $2 $3;;
+		"move") mv $2 $3;;
+		"copy-update") cp -uR $2 $3;;
+		"move-force") mv -r $2 $3;;
+	esac
+}
+	
+prompt_yesno() {
+	[[ $(echo -e "No\nYes" | eval "$dmenu_launch -p \"$1\"") == "Yes" ]] && return 0
+	return 1
+}
+
+popdir() {
+	dir=$(dirname "$CWD")
+	cd "$dir"
+	exec fedmenu $dir $mode
+}
+
 # Handle selected option or continue with selected file/directory
 case $item in
 
 	$item_back | '..')
-		exec fedmenu $(dirname "$CWD") $mode
+		popdir
 		;;
 	$item_open)
 		exec $(compgen -c | eval "$dmenu_launch -p \"Open '$CWD' with\"") "$CWD"
@@ -184,32 +236,57 @@ case $item in
 	$item_copypaste)
 		file_name=${CWD##*/}
 		location=$(fedmenu "$(pwd)" $mode_paste)
-
-		if [ -z $location ]; # Exit on cancel
-		then
-			exit
+		[[ -z $location ]] && exec fedmenu "$CWD" # Cancel on empty location
+		[[ "$location" == "$item_cancel" ]] && exec fedmenu "$CWD"
+		[[ "$location" == "$item_cancelstay" ]] && exec fedmenu "$location"
+		[[ ! -d $location ]] && popdir # Return on non-existing path
+		[[ -f "${location}/${file_name}" ]] && prompt_yesno "Update ${location}/${file_name}?" && relocate "copy-update" $CWD $location && exit 0
+		relocate "copy" $CWD $location
+		;;
+	$item_move)
+		if [ "$CWD" == "$HOME" ]; then exec fedmenu "$CWD" # Don't end up homeless… 
 		fi
-
-		if [ -f "${location}/${file_name}" ];
-		then
-			answer=$(echo -e "No\nYes" | eval "$dmenu_launch -p \"Replace ${location}/${file_name}?\"")
-			if [ $answer == "Yes" ];
-			then
-				exec cp -uR $CWD $location
-				exit 0
-			fi
-			exit 1
-		else
-			exec cp -R $CWD $location
-		fi
+		file_name=${CWD##*/}
+		location=$(fedmenu "$(pwd)" $mode_paste)
+		[[ -z $location ]] && exec fedmenu "$CWD" # Cancel on empty location
+		[[ "$location" == "$item_cancel" ]] && exec fedmenu "$CWD"
+		[[ "$location" == "$item_cancelstay" ]] && exec fedmenu "$location"
+		[[ ! -d $location ]] && popdir # Return on non-existing path
+		[[ -f "${location}/${file_name}" ]] && prompt_yesno "Replace ${location}/${file_name}?" && relocate "move-force" $CWD $location && exec exit 0 || exec exit 0
+		relocate "move" $CWD $location
 		;;
 	$item_pastehere)
-		echo "$CWD"
-		exit 0
+		exec echo "$CWD"
 		;;
 	$item_selectdirectory | $item_selectfile)
-		echo "$CWD"
-		exit 0
+		exec echo "$CWD"
+		;;
+	$item_rm)
+		[[ $(prompt_yesno "Remove '${CWD}'?") ]] && rm "$CWD"
+		popdir
+		;;
+	$item_rmdir)
+		[[ $(prompt_yesno "Remove '${CWD}'?") ]] && rmdir "$CWD"
+		popdir
+		;;
+	$item_mkdir)
+		name=$(prompt " … New directory:")
+		[ ! -z "$name" ] && mkdir "$name"
+		exec fedmenu "$CWD" "$mode"
+		;;
+	$item_touch)
+		name=$(prompt " … New file:")
+		[ ! -z "$name" ] && touch "$name"
+		exec fedmenu "$CWD" "$mode"
+		;;
+	$item_cancel)
+		echo $item_cancel
+		;;
+	$item_cancelstay)
+		echo $item_cancelstay
+		;;
+	$item_copycontents) # Doesn't work, as xclip forgets clipboard when dmenu closes
+		[ -f "$CWD" ] && xclip -sel c < "$CWD"
 		;;
 	'.')
 		# Ignore move to current directory
@@ -218,7 +295,7 @@ case $item in
 	*)
 		# Append item name to the path and continue
 		item="$CWD/$item"
+		[ -d "$item" ] && cd "$item"
 		exec fedmenu "$item" "$mode"
 		;;
 esac
-
